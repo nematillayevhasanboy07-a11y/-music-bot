@@ -1,66 +1,63 @@
-from telebot import TeleBot
-import yt_dlp
+import telebot
 import os
+import yt_dlp
+from flask import Flask
+import threading
 
-# 🔑 Sizning tokeningiz va Shazam/AcrCloud API key
-TOKEN = "8757036858:AAEMiFRwq-amw8gyYcyX78b2xPEoR_zJasc"
+# 1. BOT SOZLAMALARI
+# Tokenni Render'da 'Environment Variables'ga qo'shasiz (pastda tushuntiraman)
+API_TOKEN = os.environ.get('BOT_TOKEN')
+bot = telebot.TeleBot(API_TOKEN)
+app = Flask(__name__)
 
+# 2. RENDER UCHUN "UYG'OTGICH"
+@app.route('/')
+def home():
+    return "Bot tirik!"
 
-bot = TeleBot(TOKEN)
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 
-# --- Start komandiya ---
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "🎵 Salom! Qo‘shiq nomini yozing yoki video yuboring. Men topib beraman!")
-
-# --- Qo‘shiq nomi orqali ---
-@bot.message_handler(commands=['music'])
-def music_command(message):
-    query = message.text.replace('/music', '').strip()
-    if not query:
-        bot.reply_to(message, "⚠️ Qo‘shiq nomini yozing. Masalan: /music Shape of You")
-        return
-    download_and_send(message, query)
-
-# --- Video yuborilganda ---
-@bot.message_handler(content_types=['video'])
-def identify_video(message):
-    file_info = bot.get_file(message.video.file_id)
-    downloaded_file = bot.download_file(file_info.file_path)
-    with open("temp.mp4", 'wb') as f:
-        f.write(downloaded_file)
-    
-    # 🔹 Bu yerda Shazam/AcrCloud API orqali aniqlash
-    # misol funksiyasi: result = identify_music("temp.mp4")
-    result = "Qo‘shiq nomi: Example Song\nIjrochi: Example Artist"  # bu faqat misol
-    bot.reply_to(message, f"🎵 Topildi:\n{result}")
-    
-    os.remove("temp.mp4")
-
-# --- YouTube audio yuklash funksiyasi ---
-def download_and_send(message, query):
-    bot.reply_to(message, f"🔎 {query} qidirilmoqda...")
+# 3. MUSIQA QIDIRISH FUNKSIYASI (Youtube orqali)
+def download_music(query):
     ydl_opts = {
         'format': 'bestaudio/best',
-        'noplaylist': True,
-        'quiet': True,
-        'outtmpl': 'music.%(ext)s',
+        'default_search': 'ytsearch1:',
+        'outtmpl': 'music.mp3',
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
+        'quiet': True,
+        'noplaylist': True
     }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(query, download=True)
+        title = info['entries'][0]['title'] if 'entries' in info else info['title']
+        return title
+
+# 4. BOT BUYRUQLARI
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(message.chat.id, "🎵 Salom! Qo'shiq nomi yoki ijrochisini yozing, men topib beraman.")
+
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    qidiruv = message.text
+    msg = bot.send_message(message.chat.id, "🔎 Qidiryapman...")
+    
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=True)
-            file_name = ydl.prepare_filename(info['entries'][0])
-            audio_file = file_name.rsplit('.', 1)[0] + ".mp3"
+        title = download_music(qidiruv)
+        with open('music.mp3', 'rb') as audio:
+            bot.send_audio(message.chat.id, audio, caption=f"✅ {title}")
+        os.remove('music.mp3')
+        bot.delete_message(message.chat.id, msg.message_id)
+    except Exception as e:
+        bot.edit_message_text(f"❌ Topilmadi. Xato: {str(e)}", message.chat.id, msg.message_id)
 
-        with open(audio_file, 'rb') as f:
-            bot.send_audio(message.chat.id, f)
-        os.remove(audio_file)
-    except:
-        bot.reply_to(message, "❌ Musiqa topilmadi yoki xatolik yuz berdi.")
-
-bot.polling()
+# 5. ISHGA TUSHIRISH
+if __name__ == "__main__":
+    threading.Thread(target=run_flask).start()
+    bot.infinity_polling()
